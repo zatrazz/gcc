@@ -715,6 +715,9 @@ struct GTY (()) aarch64_frame
   unsigned wb_candidate2;
 
   bool laid_out;
+
+  /* Alternative internal arg pointer for -fsplit-stack.  */
+  rtx split_stack_arg_pointer;
 };
 
 typedef struct GTY (()) machine_function

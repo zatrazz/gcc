@@ -934,6 +934,7 @@ __splitstack_find (void *segment_arg, void *sp, size_t *len,
       nsp -= 2 * 160;
 #elif defined __s390__
       nsp -= 2 * 96;
+#elif defined __aarch64__
 #else
 #error "unrecognized target"
 #endif

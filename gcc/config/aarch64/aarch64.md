@@ -246,6 +246,7 @@
     UNSPECV_BTI_C		; Represent BTI c.
     UNSPECV_BTI_J		; Represent BTI j.
     UNSPECV_BTI_JC		; Represent BTI jc.
+    UNSPECV_SPLIT_STACK_CALL    ; Represent a morestack call
   ]
 )
 
@@ -7131,6 +7132,61 @@
 
 ;; ldp/stp peephole patterns
 (include "aarch64-ldpstp.md")
+
+;; Handle -fsplit-stack
+(define_expand "split_stack_prologue"
+  [(const_int 0)]
+  ""
+{
+  aarch64_expand_split_stack_prologue ();
+  DONE;
+})
+
+;; If there are operand 0 bytes available on the stack, jump to
+;; operand 1.
+(define_expand "split_stack_space_check"
+  [(set (match_dup 2) (compare:CC (match_dup 3) (match_dup 2)))
+   (set (pc) (if_then_else
+	      (geu (match_dup 4) (const_int 0))
+	      (label_ref (match_operand 1))
+	      (pc)))]
+  ""
+{
+  aarch64_split_stack_space_check (operands[0], operands[1]);
+  DONE;
+})
+
+;; A __morestack call using branch
+
+(define_expand "split_stack_cond_call"
+  [(match_operand 0 "aarch64_call_insn_operand" "")
+   (match_operand 1 "" "")
+   (match_operand 2 "" "")
+   (match_operand 3 "" "")]
+  ""
+{
+  emit_jump_insn (gen_split_stack_cond_call_di (operands[0], operands[1],
+						operands[2], operands[3]));
+  DONE;
+})
+
+
+(define_insn "split_stack_cond_call_<mode>"
+  [(set (pc)
+        (if_then_else
+          (match_operand 1 "aarch64_comparison_operator" "")
+          (label_ref (match_operand 2 "" ""))
+          (pc)))
+   (set (reg:P 1) (unspec_volatile:P [(match_operand:P 0 "aarch64_call_insn_operand" "")
+                                    (reg:P 1)]
+                                   UNSPECV_SPLIT_STACK_CALL))
+   (use (match_operand:P 3 "register_operand" ""))]
+  ""
+  {
+    return aarch64_gen_far_branch (operands, 0, "Lbcond", "b%M1\\t");
+  }
+  [(set_attr "type" "branch")]
+)
 
 ;; SVE.
 (include "aarch64-sve.md")

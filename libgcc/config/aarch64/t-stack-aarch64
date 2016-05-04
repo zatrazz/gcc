@@ -1,0 +1,3 @@
+# Makefile fragment to support -fsplit-stack for aarch64.
+LIB2ADD_ST += $(srcdir)/config/aarch64/morestack.S \
+	      $(srcdir)/config/aarch64/morestack-c.c

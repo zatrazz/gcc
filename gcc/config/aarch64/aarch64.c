@@ -1312,7 +1312,12 @@ aarch64_gen_far_branch (rtx * operands, int pos_label, const char * dest,
     snprintf (buffer, sizeof (buffer), "%s%s", branch_format, label_ptr);
     output_asm_insn (buffer, operands);
 
-    snprintf (buffer, sizeof (buffer), "b\t%%l%d\n%s:", pos_label, label_ptr);
+    if (GET_CODE (operands[pos_label]) == LABEL_REF)
+      snprintf (buffer, sizeof (buffer), "b\t%%l%d\n%s:", pos_label,
+		label_ptr);
+    else
+      snprintf (buffer, sizeof (buffer), "b\t%%%d\n%s:", pos_label,
+		label_ptr);
     operands[pos_label] = dest_label;
     output_asm_insn (buffer, operands);
     return "";
@@ -13290,7 +13295,7 @@ aarch64_expand_builtin_va_start (tree valist, rtx nextarg ATTRIBUTE_UNUSED)
   /* Emit code to initialize STACK, which points to the next varargs stack
      argument.  CUM->AAPCS_STACK_SIZE gives the number of stack words used
      by named arguments.  STACK is 8-byte aligned.  */
-  t = make_tree (TREE_TYPE (stack), virtual_incoming_args_rtx);
+  t = make_tree (TREE_TYPE (stack), crtl->args.internal_arg_pointer);
   if (cum->aapcs_stack_size > 0)
     t = fold_build_pointer_plus_hwi (t, cum->aapcs_stack_size * UNITS_PER_WORD);
   t = build2 (MODIFY_EXPR, TREE_TYPE (stack), stack, t);
@@ -18745,6 +18750,165 @@ aarch64_stack_protect_guard (void)
 }
 
 
+/* -fsplit-stack support.  */
+
+/* A SYMBOL_REF for __morestack.  */
+static GTY(()) rtx morestack_ref;
+
+/* Load split-stack area from thread pointer position.  The split-stack is
+   allocate just before thread pointer.  */
+
+static rtx
+aarch64_load_split_stack_value (bool use_hard_reg)
+{
+  /* Offset from thread pointer to split-stack area.  */
+  const int psso = -8;
+
+  rtx ssvalue = use_hard_reg
+		? gen_rtx_REG (Pmode, R9_REGNUM) : gen_reg_rtx (Pmode);
+  ssvalue = aarch64_load_tp (ssvalue);
+  rtx mem = gen_rtx_MEM (Pmode, plus_constant (Pmode, ssvalue, psso));
+  emit_move_insn (ssvalue, mem);
+  return ssvalue;
+}
+
+/* Emit -fsplit-stack prologue, which goes before the regular function
+   prologue.  */
+
+void
+aarch64_expand_split_stack_prologue (void)
+{
+  rtx ssvalue, reg10, reg11, reg12, cc, cmp, jump;
+  HOST_WIDE_INT allocate;
+  rtx_code_label *ok_label = NULL;
+
+  gcc_assert (flag_split_stack && reload_completed);
+
+  /* It limits total maximum stack allocation on 4G so its value can be
+     materialized using two instructions at most (movn/movk).  It might be
+     used by the linker to add some extra space for split calling non split
+     stack functions.  */
+  allocate = constant_lower_bound (cfun->machine->frame.frame_size);
+  if (allocate > ((int64_t)1 << 32))
+    {
+      sorry ("Stack frame larger than 4G is not supported for -fsplit-stack");
+      return;
+    }
+
+  if (morestack_ref == NULL_RTX)
+    {
+      morestack_ref = gen_rtx_SYMBOL_REF (Pmode, "__morestack");
+      SYMBOL_REF_FLAGS (morestack_ref) |= (SYMBOL_FLAG_LOCAL
+					   | SYMBOL_FLAG_FUNCTION);
+    }
+
+  ssvalue = aarch64_load_split_stack_value (true);
+
+  /* Always emit two insns to calculate the requested stack, so the linker
+     can edit them when adjusting size for calling non-split-stack code.  */
+  reg10 = gen_rtx_REG (Pmode, R10_REGNUM);
+  emit_insn (gen_rtx_SET (reg10, GEN_INT (allocate & 0xffff)));
+  emit_insn (gen_insv_immdi (reg10, GEN_INT (16),
+			     GEN_INT ((allocate & 0xffff0000) >> 16)));
+  emit_insn (gen_sub3_insn (reg10, stack_pointer_rtx, reg10));
+
+  ok_label = gen_label_rtx ();
+
+  /* If function uses stacked arguments save the old stack value so morestack
+     can return it.  */
+  reg11 = gen_rtx_REG (Pmode, R11_REGNUM);
+  if (maybe_gt(crtl->args.size, 0)
+      || maybe_gt(cfun->machine->frame.saved_varargs_size, 0))
+    emit_move_insn (reg11, stack_pointer_rtx);
+
+  /* x12 holds the continuation address used to return to function.  */
+  reg12 = gen_rtx_REG (Pmode, R12_REGNUM);
+  aarch64_expand_mov_immediate (reg12, gen_rtx_LABEL_REF (VOIDmode, ok_label));
+
+  /* Jump to __morestack call if current ss guard is not suffice.  */
+  cc = aarch64_gen_compare_reg (GEU, ssvalue, reg10);
+  cmp = gen_rtx_fmt_ee (GE, VOIDmode, cc, const0_rtx);
+  jump = gen_split_stack_cond_call (morestack_ref, cmp, ok_label, reg12);
+
+  aarch64_emit_unlikely_jump (jump);
+  JUMP_LABEL (jump) = ok_label;
+  LABEL_NUSES (ok_label)++;
+
+  /* __morestack will call us here.  */
+  emit_label (ok_label);
+}
+
+/* Implement TARGET_ASM_FILE_END.  */
+
+static void
+aarch64_file_end (void)
+{
+  file_end_indicate_exec_stack ();
+
+  if (flag_split_stack)
+    {
+      file_end_indicate_split_stack ();
+
+      switch_to_section (data_section);
+      fprintf (asm_out_file, "\t.align 3\n");
+      fprintf (asm_out_file, "\t.quad __libc_tcb_private_ss\n");
+    }
+}
+
+/* Return the internal arg pointer used for function incoming arguments.  */
+
+static rtx
+aarch64_internal_arg_pointer (void)
+{
+  if (flag_split_stack
+     && (lookup_attribute ("no_split_stack", DECL_ATTRIBUTES (cfun->decl))
+         == NULL))
+    {
+      if (cfun->machine->frame.split_stack_arg_pointer == NULL_RTX)
+	{
+	  rtx pat;
+
+	  cfun->machine->frame.split_stack_arg_pointer = gen_reg_rtx (Pmode);
+	  REG_POINTER (cfun->machine->frame.split_stack_arg_pointer) = 1;
+
+	  /* Put the pseudo initialization right after the note at the
+	     beginning of the function.  */
+	  pat = gen_rtx_SET (cfun->machine->frame.split_stack_arg_pointer,
+			     gen_rtx_REG (Pmode, R11_REGNUM));
+	  push_topmost_sequence ();
+	  emit_insn_after (pat, get_insns ());
+	  pop_topmost_sequence ();
+	}
+      return plus_constant (Pmode, cfun->machine->frame.split_stack_arg_pointer,
+			    FIRST_PARM_OFFSET (current_function_decl));
+    }
+  return virtual_incoming_args_rtx;
+}
+
+/* Emit -fsplit-stack dynamic stack allocation space check.  */
+
+void
+aarch64_split_stack_space_check (rtx size, rtx label)
+{
+  rtx ssvalue, cc, cmp, jump, temp;
+  rtx requested = gen_reg_rtx (Pmode);
+
+  /* Load __private_ss from TCB.  */
+  ssvalue = aarch64_load_split_stack_value (false);
+
+  temp = gen_reg_rtx (Pmode);
+
+  /* And compare it with frame pointer plus required stack.  */
+  size = force_reg (Pmode, size);
+  emit_move_insn (requested, gen_rtx_MINUS (Pmode, stack_pointer_rtx, size));
+
+  /* Jump to label call if current ss guard is not suffice.  */
+  cc = aarch64_gen_compare_reg (GE, temp, ssvalue);
+  cmp = gen_rtx_fmt_ee (GEU, VOIDmode, cc, const0_rtx);
+  jump = emit_jump_insn (gen_condjump (cmp, cc, label));
+  JUMP_LABEL (jump) = label;
+}
+
 /* Target-specific selftests.  */
 
 #if CHECKING_P
@@ -18819,6 +18983,9 @@ aarch64_run_selftests (void)
 
 #undef TARGET_ASM_FILE_START
 #define TARGET_ASM_FILE_START aarch64_start_file
+
+#undef TARGET_ASM_FILE_END
+#define TARGET_ASM_FILE_END aarch64_file_end
 
 #undef TARGET_ASM_OUTPUT_MI_THUNK
 #define TARGET_ASM_OUTPUT_MI_THUNK aarch64_output_mi_thunk
@@ -18909,6 +19076,9 @@ aarch64_run_selftests (void)
 
 #undef TARGET_FUNCTION_VALUE_REGNO_P
 #define TARGET_FUNCTION_VALUE_REGNO_P aarch64_function_value_regno_p
+
+#undef TARGET_INTERNAL_ARG_POINTER
+#define TARGET_INTERNAL_ARG_POINTER aarch64_internal_arg_pointer
 
 #undef TARGET_GIMPLE_FOLD_BUILTIN
 #define TARGET_GIMPLE_FOLD_BUILTIN aarch64_gimple_fold_builtin

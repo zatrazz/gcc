@@ -166,6 +166,35 @@ aarch64_handle_option (struct gcc_options *opts,
     }
 }
 
+/* -fsplit-stack uses a TCB field available on glibc-2.27.  GLIBC also
+   exports symbol, __tcb_private_ss, to signal it has the field available
+   on TCB bloc.  This aims to prevent binaries linked against newer
+   GLIBC to run on non-supported ones.  */
+
+static bool
+aarch64_supports_split_stack (bool report ATTRIBUTE_UNUSED,
+			      struct gcc_options *opts ATTRIBUTE_UNUSED)
+{
+#ifndef TARGET_GLIBC_MAJOR
+#define TARGET_GLIBC_MAJOR 0
+#endif
+#ifndef TARGET_GLIBC_MINOR
+#define TARGET_GLIBC_MINOR 0
+#endif
+  /* Note: Can't test DEFAULT_ABI here, it isn't set until later.  */
+  if (TARGET_GLIBC_MAJOR * 1000 + TARGET_GLIBC_MINOR >= 2027)
+    return true;
+
+  if (report)
+    error ("%<-fsplit-stack%> currently only supported on AArch64 GNU/Linux with glibc-2.27 or later");
+  return false;
+}
+
+#undef TARGET_SUPPORTS_SPLIT_STACK
+#define TARGET_SUPPORTS_SPLIT_STACK aarch64_supports_split_stack
+
+struct gcc_targetm_common targetm_common = TARGETM_COMMON_INITIALIZER;
+
 /* An ISA extension in the co-processor and main instruction set space.  */
 struct aarch64_option_extension
 {
@@ -568,4 +597,3 @@ aarch64_rewrite_mcpu (int argc, const char **argv)
 struct gcc_targetm_common targetm_common = TARGETM_COMMON_INITIALIZER;
 
 #undef AARCH64_CPU_NAME_LENGTH
-
