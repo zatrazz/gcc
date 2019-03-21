@@ -166,7 +166,7 @@ aarch64_handle_option (struct gcc_options *opts,
     }
 }
 
-/* -fsplit-stack uses a TCB field available on glibc-2.27.  GLIBC also
+/* -fsplit-stack uses a TCB field available on glibc-2.0.  GLIBC also
    exports symbol, __tcb_private_ss, to signal it has the field available
    on TCB bloc.  This aims to prevent binaries linked against newer
    GLIBC to run on non-supported ones.  */
@@ -182,11 +182,12 @@ aarch64_supports_split_stack (bool report ATTRIBUTE_UNUSED,
 #define TARGET_GLIBC_MINOR 0
 #endif
   /* Note: Can't test DEFAULT_ABI here, it isn't set until later.  */
-  if (TARGET_GLIBC_MAJOR * 1000 + TARGET_GLIBC_MINOR >= 2027)
+  if (TARGET_GLIBC_MAJOR * 1000 + TARGET_GLIBC_MINOR >= 2030)
     return true;
 
   if (report)
-    error ("%<-fsplit-stack%> currently only supported on AArch64 GNU/Linux with glibc-2.27 or later");
+    error ("%<-fsplit-stack%> currently only supported on AArch64 GNU/Linux"
+	   " with glibc-2.30 or later");
   return false;
 }
 
