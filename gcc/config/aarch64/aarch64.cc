@@ -25965,7 +25965,8 @@ currently_supported_simd_type (tree t, tree b)
 static int
 aarch64_simd_clone_compute_vecsize_and_simdlen (struct cgraph_node *node,
 					struct cgraph_simd_clone *clonei,
-					tree base_type, int num)
+					tree base_type, int num,
+					bool *always_masked)
 {
   tree t, ret_type;
   unsigned int elt_bits, count;
@@ -26031,17 +26032,29 @@ aarch64_simd_clone_compute_vecsize_and_simdlen (struct cgraph_node *node,
 	}
     }
 
-  clonei->vecsize_mangle = 'n';
-  clonei->mask_mode = VOIDmode;
   elt_bits = GET_MODE_BITSIZE (SCALAR_TYPE_MODE (base_type));
   if (known_eq (clonei->simdlen, 0U))
     {
-      count = 2;
-      vec_bits = (num == 0 ? 64 : 128);
+      count = TARGET_SVE ? 3 : 2;
+      if (num <= 1)
+	{
+	  *always_masked = false;
+	  clonei->vecsize_mangle = 'n';
+	  vec_bits = (num == 0 ? 64 : 128);
+	  clonei->mask_mode = VOIDmode;
+	}
+      else
+	{
+	  *always_masked = true;
+	  clonei->vecsize_mangle = 's';
+	  vec_bits = BITS_PER_SVE_VECTOR;
+	  clonei->mask_mode = VNx16BImode;
+	}
       clonei->simdlen = exact_div (vec_bits, elt_bits);
     }
   else
     {
+      clonei->vecsize_mangle = 'n';
       count = 1;
       vec_bits = clonei->simdlen * elt_bits;
       /* For now, SVE simdclones won't produce illegal simdlen, So only check
@@ -26057,7 +26070,16 @@ aarch64_simd_clone_compute_vecsize_and_simdlen (struct cgraph_node *node,
     }
   clonei->vecsize_int = vec_bits;
   clonei->vecsize_float = vec_bits;
+
   return count;
+}
+
+/* Implement TARGET_SIMD_CLONE_ADJUST_TYPE_FLAGS.  */
+static void
+aarch64_simd_clone_adjust_type_flags (tree vectype, poly_uint64 veclen)
+{
+  if (!veclen.is_constant())
+    aarch64_sve::set_arm_sve_attributes (vectype);
 }
 
 /* Implement TARGET_SIMD_CLONE_ADJUST.  */
@@ -26068,9 +26090,12 @@ aarch64_simd_clone_adjust (struct cgraph_node *node)
   /* Add aarch64_vector_pcs target attribute to SIMD clones so they
      use the correct ABI.  */
 
-  tree t = TREE_TYPE (node->decl);
-  TYPE_ATTRIBUTES (t) = make_attribute ("aarch64_vector_pcs", "default",
-					TYPE_ATTRIBUTES (t));
+  if (node->simdclone->mask_mode == VOIDmode)
+    {
+      tree t = TREE_TYPE (node->decl);
+      TYPE_ATTRIBUTES (t) = make_attribute ("aarch64_vector_pcs", "default",
+					    TYPE_ATTRIBUTES (t));
+    }
 }
 
 /* Implement TARGET_SIMD_CLONE_USABLE.  */
@@ -27099,6 +27124,10 @@ aarch64_libgcc_floating_mode_supported_p
 #undef TARGET_SIMD_CLONE_COMPUTE_VECSIZE_AND_SIMDLEN
 #define TARGET_SIMD_CLONE_COMPUTE_VECSIZE_AND_SIMDLEN \
   aarch64_simd_clone_compute_vecsize_and_simdlen
+
+#undef TARGET_SIMD_CLONE_ADJUST_TYPE_FLAGS
+#define TARGET_SIMD_CLONE_ADJUST_TYPE_FLAGS \
+  aarch64_simd_clone_adjust_type_flags
 
 #undef TARGET_SIMD_CLONE_ADJUST
 #define TARGET_SIMD_CLONE_ADJUST aarch64_simd_clone_adjust

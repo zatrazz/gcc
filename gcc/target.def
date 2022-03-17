@@ -1631,7 +1631,13 @@ fields in @var{simd_clone} structure pointed by @var{clone_info} argument and al
 @var{simdlen} field if it was previously 0.\n\
 The hook should return 0 if SIMD clones shouldn't be emitted,\n\
 or number of @var{vecsize_mangle} variants that should be emitted.",
-int, (struct cgraph_node *, struct cgraph_simd_clone *, tree, int), NULL)
+int, (struct cgraph_node *, struct cgraph_simd_clone *, tree, int, bool *), NULL)
+
+DEFHOOK
+(adjust_type_flags,
+"This hook should add any additional required attribute on @var{vectype} with\n\
+@var{veclen} size if needed.",
+void, (tree vectype, poly_uint64 veclen), NULL)
 
 DEFHOOK
 (adjust,

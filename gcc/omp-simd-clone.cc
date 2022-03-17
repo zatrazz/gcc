@@ -55,10 +55,16 @@ along with GCC; see the file COPYING3.  If not see
 /* Return the number of elements in vector type VECTYPE, which is associated
    with a SIMD clone.  At present these always have a constant length.  */
 
-static unsigned HOST_WIDE_INT
+static poly_uint64
 simd_clone_subparts (tree vectype)
 {
-  return TYPE_VECTOR_SUBPARTS (vectype).to_constant ();
+  return TYPE_VECTOR_SUBPARTS (vectype);
+}
+
+static bool
+simd_clone_is_mask_mode (machine_mode mode)
+{
+  return mode == VOIDmode || GET_MODE_CLASS (mode) == MODE_VECTOR_BOOL;
 }
 
 /* Allocate a fresh `simd_clone' and return it.  NARGS is the number
@@ -348,8 +354,13 @@ simd_clone_mangle (struct cgraph_node *node,
   pp_character (&pp, vecsize_mangle);
   pp_character (&pp, mask);
   /* For now, simdlen is always constant, while variable simdlen pp 'n'.  */
-  unsigned int len = simdlen.to_constant ();
-  pp_decimal_int (&pp, (len));
+  if (simdlen.is_constant ())
+    {
+      unsigned int len = simdlen.to_constant ();
+      pp_decimal_int (&pp, (len));
+    }
+  else
+    pp_character (&pp, 'x');
 
   for (n = 0; n < clone_info->nargs; ++n)
     {
@@ -517,6 +528,8 @@ simd_clone_adjust_return_type (struct cgraph_node *node)
       t = build_array_type_nelts (t, exact_div (node->simdclone->simdlen,
 						veclen));
     }
+  if (targetm.simd_clone.adjust_type_flags)
+    targetm.simd_clone.adjust_type_flags (t, veclen);
   TREE_TYPE (TREE_TYPE (fndecl)) = t;
   if (!node->definition)
     return NULL_TREE;
@@ -630,6 +643,9 @@ simd_clone_adjust_argument_types (struct cgraph_node *node)
 	    adj.type = build_vector_type (parm_type, veclen);
 	  sc->args[i].vector_type = adj.type;
 	  k = vector_unroll_factor (sc->simdlen, veclen);
+	  if (targetm.simd_clone.adjust_type_flags)
+	    targetm.simd_clone.adjust_type_flags (sc->args[i].vector_type,
+						  veclen);
 	  for (j = 1; j < k; j++)
 	    {
 	      vec_safe_push (new_params, adj);
@@ -680,6 +696,8 @@ simd_clone_adjust_argument_types (struct cgraph_node *node)
 	adj.type = build_vector_type (pointer_sized_int_node, veclen);
       else
 	adj.type = build_vector_type (base_type, veclen);
+      if (targetm.simd_clone.adjust_type_flags)
+	targetm.simd_clone.adjust_type_flags (adj.type, sc->simdlen);
       vec_safe_push (new_params, adj);
 
       k = vector_unroll_factor (sc->simdlen, veclen);
@@ -695,7 +713,7 @@ simd_clone_adjust_argument_types (struct cgraph_node *node)
 	{
 	  sc->args[i].orig_arg
 	    = build_decl (UNKNOWN_LOCATION, PARM_DECL, NULL, base_type);
-	  if (sc->mask_mode == VOIDmode)
+	  if (simd_clone_is_mask_mode (sc->mask_mode))
 	    sc->args[i].simd_array
 	      = create_tmp_simd_array ("mask", base_type, sc->simdlen);
 	  else if (k > 1)
@@ -770,7 +788,7 @@ simd_clone_init_simd_arrays (struct cgraph_node *node,
       node->simdclone->args[i].vector_arg = arg;
 
       tree array = node->simdclone->args[i].simd_array;
-      if (node->simdclone->mask_mode != VOIDmode
+      if (!simd_clone_is_mask_mode (node->simdclone->mask_mode)
 	  && node->simdclone->args[i].arg_type == SIMD_CLONE_ARG_TYPE_MASK)
 	{
 	  if (array == NULL_TREE)
@@ -792,7 +810,8 @@ simd_clone_init_simd_arrays (struct cgraph_node *node,
 	  continue;
 	}
       if (known_eq (simd_clone_subparts (TREE_TYPE (arg)),
-		    node->simdclone->simdlen))
+		    node->simdclone->simdlen)
+	  || GET_MODE_CLASS (node->simdclone->mask_mode) == MODE_VECTOR_BOOL)
 	{
 	  tree ptype = build_pointer_type (TREE_TYPE (TREE_TYPE (array)));
 	  tree ptr = build_fold_addr_expr (array);
@@ -803,7 +822,7 @@ simd_clone_init_simd_arrays (struct cgraph_node *node,
 	}
       else
 	{
-	  unsigned int simdlen = simd_clone_subparts (TREE_TYPE (arg));
+	  poly_uint64 simdlen = simd_clone_subparts (TREE_TYPE (arg));
 	  unsigned int times = vector_unroll_factor (node->simdclone->simdlen,
 						     simdlen);
 	  tree ptype = build_pointer_type (TREE_TYPE (TREE_TYPE (array)));
@@ -989,7 +1008,8 @@ ipa_simd_modify_function_body (struct cgraph_node *node,
 		  iter, NULL_TREE, NULL_TREE);
       adjustments->register_replacement (&(*adjustments->m_adj_params)[j], r);
 
-      if (multiple_p (node->simdclone->simdlen, simd_clone_subparts (vectype)))
+      if (node->simdclone->simdlen.is_constant()
+	  && multiple_p (node->simdclone->simdlen, simd_clone_subparts (vectype)))
 	j += vector_unroll_factor (node->simdclone->simdlen,
 				   simd_clone_subparts (vectype)) - 1;
     }
@@ -1258,8 +1278,8 @@ simd_clone_adjust (struct cgraph_node *node)
 	 below).  */
       loop = alloc_loop ();
       cfun->has_force_vectorize_loops = true;
-      /* For now, simlen is always constant.  */
-      loop->safelen = node->simdclone->simdlen.to_constant ();
+      loop->safelen = node->simdclone->simdlen.is_constant ()
+		      ? node->simdclone->simdlen.to_constant () : 1;
       loop->force_vectorize = true;
       loop->header = body_bb;
     }
@@ -1271,7 +1291,7 @@ simd_clone_adjust (struct cgraph_node *node)
       tree mask_array
 	= node->simdclone->args[node->simdclone->nargs - 1].simd_array;
       tree mask;
-      if (node->simdclone->mask_mode != VOIDmode)
+      if (!simd_clone_is_mask_mode (node->simdclone->mask_mode))
 	{
 	  tree shift_cnt;
 	  if (mask_array == NULL_TREE)
@@ -1700,9 +1720,11 @@ expand_simd_clones (struct cgraph_node *node)
 	 1 (just one ISA of simd clones should be created) or higher
 	 count of ISA variants.  In that case, clone_info is initialized
 	 for the first ISA variant.  */
+      bool always_masked;
       int count
 	= targetm.simd_clone.compute_vecsize_and_simdlen (node, clone_info,
-							  base_type, 0);
+							  base_type, 0,
+							  &always_masked);
       if (count == 0)
 	continue;
 
@@ -1727,9 +1749,12 @@ expand_simd_clones (struct cgraph_node *node)
 	      /* And call the target hook again to get the right ISA.  */
 	      targetm.simd_clone.compute_vecsize_and_simdlen (node, clone,
 							      base_type,
-							      i / 2);
+							      i / 2,
+							      &always_masked);
 	      if ((i & 1) != 0)
 		clone->inbranch = 1;
+	      if (always_masked && !clone->inbranch)
+		continue;
 	    }
 
 	  /* simd_clone_mangle might fail if such a clone has been created

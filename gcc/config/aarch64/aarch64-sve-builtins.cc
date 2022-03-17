@@ -3829,6 +3829,27 @@ handle_arm_sve_vector_bits_attribute (tree *node, tree, tree args, int,
   return NULL_TREE;
 }
 
+void
+set_arm_sve_attributes (tree vectype)
+{
+  SET_TYPE_STRUCTURAL_EQUALITY (vectype);
+  TYPE_ARTIFICIAL (vectype) = 1;
+  TYPE_INDIVISIBLE_P (vectype) = 1;
+
+  unsigned int num_zr = 0, num_pr = 0;
+  if (TYPE_MODE (vectype) == VNx16BImode)
+    num_pr = 1;
+  else
+    num_zr = 1;
+
+  tree value = tree_cons (NULL_TREE, vectype, NULL_TREE);
+  value = tree_cons (NULL_TREE, size_int (num_pr), value);
+  value = tree_cons (NULL_TREE, size_int (num_zr), value);
+  TYPE_ATTRIBUTES (vectype) = tree_cons (get_identifier ("SVE type"), value,
+				      TYPE_ATTRIBUTES (vectype));
+  make_type_sizeless (vectype);
+}
+
 /* Implement TARGET_VERIFY_TYPE_CONTEXT for SVE types.  */
 bool
 verify_type_context (location_t loc, type_context_kind context,

@@ -23293,7 +23293,8 @@ ix86_memmodel_check (unsigned HOST_WIDE_INT val)
 static int
 ix86_simd_clone_compute_vecsize_and_simdlen (struct cgraph_node *node,
 					     struct cgraph_simd_clone *clonei,
-					     tree base_type, int num)
+					     tree base_type, int num,
+					     bool *)
 {
   int ret = 1;
 

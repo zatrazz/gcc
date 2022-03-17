@@ -985,6 +985,7 @@ namespace aarch64_sve {
   gimple *gimple_fold_builtin (unsigned int, gimple_stmt_iterator *, gcall *);
   rtx expand_builtin (unsigned int, tree, rtx);
   tree handle_arm_sve_vector_bits_attribute (tree *, tree, tree, int, bool *);
+  void set_arm_sve_attributes (tree);
 #ifdef GCC_TARGET_H
   bool verify_type_context (location_t, type_context_kind, const_tree, bool);
 #endif

@@ -804,6 +804,9 @@ struct GTY(()) cgraph_simd_clone {
      otherwise false.  */
   unsigned int inbranch : 1;
 
+  /* True if the only the in-branch variation should be generated.  */
+  unsigned int always_masked : 1;
+
   /* Doubly linked list of SIMD clones.  */
   cgraph_node *prev_clone, *next_clone;
 

@@ -6245,12 +6245,17 @@ The default is @code{NULL_TREE} which means to not vectorize scatter
 stores.
 @end deftypefn
 
-@deftypefn {Target Hook} int TARGET_SIMD_CLONE_COMPUTE_VECSIZE_AND_SIMDLEN (struct cgraph_node *@var{}, struct cgraph_simd_clone *@var{}, @var{tree}, @var{int})
+@deftypefn {Target Hook} int TARGET_SIMD_CLONE_COMPUTE_VECSIZE_AND_SIMDLEN (struct cgraph_node *@var{}, struct cgraph_simd_clone *@var{}, @var{tree}, @var{int}, bool *@var{})
 This hook should set @var{vecsize_mangle}, @var{vecsize_int}, @var{vecsize_float}
 fields in @var{simd_clone} structure pointed by @var{clone_info} argument and also
 @var{simdlen} field if it was previously 0.
 The hook should return 0 if SIMD clones shouldn't be emitted,
 or number of @var{vecsize_mangle} variants that should be emitted.
+@end deftypefn
+
+@deftypefn {Target Hook} void TARGET_SIMD_CLONE_ADJUST_TYPE_FLAGS (tree @var{vectype}, poly_uint64 @var{veclen})
+This hook should add any additional required attribute on @var{vectype} with
+@var{veclen} size if needed.
 @end deftypefn
 
 @deftypefn {Target Hook} void TARGET_SIMD_CLONE_ADJUST (struct cgraph_node *@var{})
